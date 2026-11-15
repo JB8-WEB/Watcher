@@ -6,26 +6,49 @@ CHAT = os.environ["TELEGRAM_CHAT_ID"].strip()
 BASE = "https://deals.3rrood.com/store/amazon_resale?gcat={}&stock=in"
 CATS = {"mobiles": "موبايلات", "laptops": "لابتوبات", "tablets": "تابلت", "tvs": "تلفزيونات"}
 SEEN = "seen.json"
+UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
 
 
 def send(text):
     r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT, "text": text},
+        data={"chat_id": CHAT, "text": text[:4000]},
         timeout=30,
     )
-    print("TELEGRAM:", r.status_code, r.text[:200])
-    return r
+    print("telegram status:", r.status_code)
+
+
+FIND_JS = """() => {
+  const out = new Map();
+  document.querySelectorAll('a[href]').forEach(a => {
+    let el = a;
+    for (let i = 0; i < 4 && el; i++) {
+      if (el.innerText && el.innerText.includes('ج.م')) {
+        out.set(a.href, el.innerText);
+        break;
+      }
+      el = el.parentElement;
+    }
+  });
+  return [...out].map(([href, text]) => ({href, text}));
+}"""
+
+DIAG_JS = """() => ({
+  title: document.title,
+  anchors: document.querySelectorAll('a[href]').length,
+  text: document.body ? document.body.innerText.slice(0, 400) : ''
+})"""
 
 
 def scrape(page, cat):
-    page.goto(BASE.format(cat), wait_until="networkidle", timeout=60000)
-    page.wait_for_timeout(3000)
-    raw = page.evaluate(
-        """() => [...document.querySelectorAll('a[href]')]
-        .filter(a => a.innerText.includes('ج.م'))
-        .map(a => ({href: a.href, text: a.innerText}))"""
-    )
+    page.goto(BASE.format(cat), wait_until="domcontentloaded", timeout=60000)
+    try:
+        page.wait_for_selector("text=ج.م", timeout=20000)
+    except Exception:
+        pass
+    page.wait_for_timeout(2000)
+    raw = page.evaluate(FIND_JS)
     items = {}
     for r in raw:
         lines = [l.strip() for l in r["text"].split("\n") if l.strip()]
@@ -34,25 +57,30 @@ def scrape(page, cat):
         title = max(lines, key=len)
         price = next((l for l in lines if re.fullmatch(r"[\d,\.]+", l)), "?")
         items[r["href"]] = {"title": title[:120], "price": price}
+    diag = page.evaluate(DIAG_JS) if not items else None
     print(cat, "found", len(items), "products")
-    return items
+    return items, diag
 
 
 def main():
-    send("✅ تجربة: السكريبت اشتغل")
     seen = json.load(open(SEEN)) if os.path.exists(SEEN) else {}
     report = []
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(locale="ar-EG")
+        browser = p.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
+        ctx = browser.new_context(user_agent=UA, locale="ar-EG", viewport={"width": 412, "height": 915})
+        ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        page = ctx.new_page()
         for cat, name in CATS.items():
             try:
-                items = scrape(page, cat)
+                items, diag = scrape(page, cat)
             except Exception as e:
-                print(cat, "ERROR", str(e)[:200])
-                report.append(f"{name}: فشل ({str(e)[:60]})")
+                print(cat, "ERROR", str(e)[:150])
+                report.append(f"{name}: فشل ({str(e)[:80]})")
                 continue
-            if cat not in seen:
+            if not items:
+                report.append(f"{name}: 0 منتج | عنوان الصفحة: {diag['title']} | روابط: {diag['anchors']}\n{diag['text']}")
+                continue
+            if not seen.get(cat):
                 seen[cat] = list(items.keys())
                 report.append(f"{name}: اتسجل {len(items)} منتج")
                 continue
@@ -63,7 +91,7 @@ def main():
                     seen[cat].append(href)
         browser.close()
     if report:
-        send("تقرير أول تشغيل:\n" + "\n".join(report))
+        send("تقرير:\n\n" + "\n\n".join(report))
     json.dump(seen, open(SEEN, "w"), ensure_ascii=False)
 
 
