@@ -1,19 +1,21 @@
 import os, json, re, requests
 from playwright.sync_api import sync_playwright
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT = os.environ["TELEGRAM_CHAT_ID"]
+TOKEN = os.environ["TELEGRAM_TOKEN"].strip()
+CHAT = os.environ["TELEGRAM_CHAT_ID"].strip()
 BASE = "https://deals.3rrood.com/store/amazon_resale?gcat={}&stock=in"
 CATS = {"mobiles": "موبايلات", "laptops": "لابتوبات", "tablets": "تابلت", "tvs": "تلفزيونات"}
 SEEN = "seen.json"
 
 
 def send(text):
-    requests.post(
+    r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
         data={"chat_id": CHAT, "text": text},
         timeout=30,
     )
+    print("TELEGRAM:", r.status_code, r.text[:200])
+    return r
 
 
 def scrape(page, cat):
@@ -32,10 +34,12 @@ def scrape(page, cat):
         title = max(lines, key=len)
         price = next((l for l in lines if re.fullmatch(r"[\d,\.]+", l)), "?")
         items[r["href"]] = {"title": title[:120], "price": price}
+    print(cat, "found", len(items), "products")
     return items
 
 
 def main():
+    send("✅ تجربة: السكريبت اشتغل")
     seen = json.load(open(SEEN)) if os.path.exists(SEEN) else {}
     report = []
     with sync_playwright() as p:
@@ -45,6 +49,7 @@ def main():
             try:
                 items = scrape(page, cat)
             except Exception as e:
+                print(cat, "ERROR", str(e)[:200])
                 report.append(f"{name}: فشل ({str(e)[:60]})")
                 continue
             if cat not in seen:
